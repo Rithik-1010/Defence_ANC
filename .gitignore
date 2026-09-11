@@ -1,0 +1,18 @@
+# Byte-compiled
+__pycache__/
+*.pyc
+
+# Model checkpoints
+*.pth
+*.onnx
+
+# Audio test files
+*.wav
+spectrogram.png
+
+# Data directories (too large for git)
+data/
+
+# IDE
+.vscode/
+.idea/
