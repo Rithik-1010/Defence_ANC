@@ -126,7 +126,8 @@ with gr.Blocks(title="Defence ANC Dashboard") as demo:
         process_btn.click(fn=process_offline, inputs=[audio_in, mix_slider], outputs=[audio_out, noise_detected])
         
     # Start the continuous timer for real-time plot updates
-    demo.load(update_metrics, inputs=[df_state], outputs=[df_state, snr_plot, stoi_plot, pesq_plot], every=1.0)
+    timer = gr.Timer(1.0)
+    timer.tick(update_metrics, inputs=[df_state], outputs=[df_state, snr_plot, stoi_plot, pesq_plot])
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", theme=theme)
