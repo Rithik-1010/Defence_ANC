@@ -193,19 +193,66 @@ def get_device_table(active=False):
 # ──────────────────────────────────────────────
 # Gradio UI
 # ──────────────────────────────────────────────
-theme = gr.themes.Glass(
-    primary_hue="indigo",
-    secondary_hue="cyan",
-    neutral_hue="slate"
+theme = gr.themes.Base(
+    primary_hue="orange",
+    secondary_hue="red",
+    neutral_hue="zinc",
+).set(
+    body_background_fill="#1e1e1e",
+    body_background_fill_dark="#1e1e1e",
+    body_text_color="#e0e0e0",
+    body_text_color_dark="#e0e0e0",
+    block_background_fill="#1e1e1e",
+    block_background_fill_dark="#1e1e1e",
+    block_border_width="0px",
+    block_border_width_dark="0px",
+    block_shadow="5px 5px 10px #131313, -5px -5px 10px #292929",
+    block_shadow_dark="5px 5px 10px #131313, -5px -5px 10px #292929",
+    button_primary_background_fill="#1e1e1e",
+    button_primary_background_fill_dark="#1e1e1e",
+    button_primary_text_color="#ff5722",
+    button_primary_text_color_dark="#ff5722",
+    button_primary_border_color="#ff5722",
+    button_primary_border_color_dark="#ff5722",
+    button_shadow="5px 5px 10px #131313, -5px -5px 10px #292929",
+    button_shadow_active="inset 5px 5px 10px #131313, inset -5px -5px 10px #292929",
+    button_shadow_hover="5px 5px 10px #131313, -5px -5px 10px #292929",
+    button_secondary_background_fill="#1e1e1e",
+    button_secondary_background_fill_dark="#1e1e1e",
+    button_secondary_text_color="#ff9800",
+    input_background_fill="#1e1e1e",
+    input_background_fill_dark="#1e1e1e",
+    input_shadow="inset 5px 5px 10px #131313, inset -5px -5px 10px #292929",
+    input_shadow_dark="inset 5px 5px 10px #131313, inset -5px -5px 10px #292929",
+    slider_color="#ff5722",
+    slider_color_dark="#ff5722",
 )
 
-with gr.Blocks(title="Defence ANC — Mesh Network") as demo:
+custom_css = """
+body, .gradio-container { background-color: #1e1e1e !important; }
+.gr-box, .gr-panel, .gr-form, .gr-block {
+    background-color: #1e1e1e !important;
+    border-radius: 15px !important;
+    border: none !important;
+    box-shadow: 6px 6px 12px #131313, -6px -6px 12px #292929 !important;
+}
+.gr-button-primary, .gr-button-secondary, .gr-button-stop {
+    background-color: #1e1e1e !important;
+    border: 1px solid #333 !important;
+    box-shadow: 4px 4px 8px #131313, -4px -4px 8px #292929 !important;
+}
+.gr-button-primary:active, .gr-button-secondary:active, .gr-button-stop:active {
+    box-shadow: inset 4px 4px 8px #131313, inset -4px -4px 8px #292929 !important;
+}
+"""
+
+with gr.Blocks(title="Defence ANC — Mesh Network", theme=theme, css=custom_css) as demo:
     gr.HTML("""
     <div style="text-align:center; padding:15px;">
-        <h1 style="color:#6366F1; font-size:2.4rem; font-weight:900;">
+        <h1 style="color:#ff5722; font-size:2.4rem; font-weight:900;">
             🛡️ Defence ANC — Decentralized Mesh Network
         </h1>
-        <p style="font-size:1.1rem; color:#94A3B8;">
+        <p style="font-size:1.1rem; color:#b0bec5;">
             Each laptop is an independent node. Nodes auto-discover peers on WiFi.
             Audio streams only to peers on the <b>same channel</b>. No central server.
         </p>
