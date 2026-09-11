@@ -1,43 +1,35 @@
 import asyncio
 import websockets
 import numpy as np
+import sounddevice as sd
 import argparse
-import time
 
-async def audio_sender(uri, filepath=None, chunk_size=512, sr=16000):
+async def audio_sender(uri, sr=16000, chunk_size=256):
+    queue = asyncio.Queue()
+
+    def callback(indata, frames, time, status):
+        if status:
+            print(f"Mic status: {status}")
+        # Put the mono audio chunk into the queue
+        queue.put_nowait(indata[:, 0].copy())
+
     async with websockets.connect(uri) as websocket:
-        print(f"Connected to {uri}")
+        print(f"Connected to {uri}.")
+        print(f"Capturing live microphone audio at {sr}Hz...")
         
-        if filepath:
-            import librosa
-            print(f"Streaming from file: {filepath}")
-            y, _ = librosa.load(filepath, sr=sr, mono=True)
-            
-            # Send chunks to simulate real-time
-            chunk_duration = chunk_size / sr
-            
-            for i in range(0, len(y), chunk_size):
-                chunk = y[i:i+chunk_size]
-                if len(chunk) < chunk_size:
-                    chunk = np.pad(chunk, (0, chunk_size - len(chunk)))
-                
-                start_time = time.time()
-                await websocket.send(chunk.tobytes())
-                
-                # Sleep to maintain real-time pacing
-                elapsed = time.time() - start_time
-                sleep_time = max(0, chunk_duration - elapsed)
-                await asyncio.sleep(sleep_time)
-                
-            print("Finished sending file.")
-        else:
-            print("Streaming from live microphone not yet implemented.")
-            # Would use sounddevice here
+        # Start the microphone stream
+        with sd.InputStream(samplerate=sr, channels=1, blocksize=chunk_size, callback=callback):
+            while True:
+                chunk = await queue.get()
+                # Send the float32 numpy array as bytes
+                await websocket.send(chunk.astype(np.float32).tobytes())
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ANC Sender")
-    parser.add_argument("--uri", default="ws://localhost:8765", help="WebSocket URI")
-    parser.add_argument("--file", help="Path to WAV file to stream")
+    parser = argparse.ArgumentParser(description="ANC Sender (Live Mic)")
+    parser.add_argument("--uri", default="ws://localhost:8765", help="WebSocket URI of the receiver")
     args = parser.parse_args()
     
-    asyncio.run(audio_sender(args.uri, args.file))
+    try:
+        asyncio.run(audio_sender(args.uri))
+    except KeyboardInterrupt:
+        print("Stopped live stream.")
