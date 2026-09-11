@@ -54,7 +54,7 @@ theme = gr.themes.Soft(
     font=[gr.themes.GoogleFont('Inter'), 'ui-sans-serif', 'system-ui', 'sans-serif']
 )
 
-with gr.Blocks(theme=theme, title="Defence ANC Dashboard") as demo:
+with gr.Blocks(title="Defence ANC Dashboard") as demo:
     # Header
     gr.Markdown(
         """
@@ -100,15 +100,15 @@ with gr.Blocks(theme=theme, title="Defence ANC Dashboard") as demo:
     with gr.Row():
         snr_plot = gr.LinePlot(
             x="Time (s)", y="SNR (dB)", title="Signal-to-Noise Ratio (Target: >15dB)", 
-            color="blue", tooltip=["Time (s)", "SNR (dB)"], width=300, height=250
+            color="blue", tooltip=["Time (s)", "SNR (dB)"]
         )
         stoi_plot = gr.LinePlot(
             x="Time (s)", y="STOI", title="Intelligibility (STOI) (Target: >0.85)", 
-            color="green", tooltip=["Time (s)", "STOI"], width=300, height=250
+            color="green", tooltip=["Time (s)", "STOI"]
         )
         pesq_plot = gr.LinePlot(
             x="Time (s)", y="PESQ", title="Perceptual Quality (PESQ) (Target: >2.5)", 
-            color="orange", tooltip=["Time (s)", "PESQ"], width=300, height=250
+            color="orange", tooltip=["Time (s)", "PESQ"]
         )
     
     gr.Markdown("---")
@@ -129,4 +129,4 @@ with gr.Blocks(theme=theme, title="Defence ANC Dashboard") as demo:
     demo.load(update_metrics, inputs=[df_state], outputs=[df_state, snr_plot, stoi_plot, pesq_plot], every=1.0)
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0")
+    demo.launch(server_name="0.0.0.0", theme=theme)
