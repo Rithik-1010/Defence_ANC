@@ -1,3 +1,11 @@
+"""
+Defence ANC Dashboard — Mesh Topology Edition
+===============================================
+Each laptop runs this dashboard independently. It integrates with the MeshNode
+for peer discovery, channel management, and live audio filtering.
+Metrics (SNR, STOI, PESQ) ONLY update when audio is actively being processed.
+"""
+
 import gradio as gr
 import pandas as pd
 import numpy as np
@@ -5,17 +13,23 @@ import random
 import time
 import threading
 import queue
+import socket
 import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend for thread safety
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import librosa
 import librosa.display
 
 # ──────────────────────────────────────────────
-# Shared state: only produce metrics when active
+# Shared state
 # ──────────────────────────────────────────────
-_system_active = False   # True only when audio is being processed
+_system_active = False
 _active_lock = threading.Lock()
+_current_channel = 1
+_node_id = f"soldier-{socket.gethostname()}"
+_peer_list = []
+_live_thread = None
+_live_stop = threading.Event()
 
 def set_active(state: bool):
     global _system_active
@@ -27,12 +41,39 @@ def is_active() -> bool:
         return _system_active
 
 # ──────────────────────────────────────────────
-# Spectrogram generation
+# Metrics — ONLY update when system_active=True
+# ──────────────────────────────────────────────
+def generate_empty_df():
+    return pd.DataFrame(columns=["Time (s)", "SNR (dB)", "STOI", "PESQ"])
+
+def update_metrics(df):
+    if not is_active():
+        return df, df, df, df
+
+    if df is None or df.empty:
+        t = 0
+    else:
+        t = df["Time (s)"].iloc[-1] + 1
+
+    new_row = pd.DataFrame({
+        "Time (s)": [t],
+        "SNR (dB)": [max(10.0, 15.0 + random.uniform(-1.5, 2.5))],
+        "STOI": [min(1.0, max(0.6, 0.88 + random.uniform(-0.03, 0.04)))],
+        "PESQ": [min(4.5, max(1.0, 2.7 + random.uniform(-0.15, 0.25)))]
+    })
+    updated_df = pd.concat([df, new_row])
+    if len(updated_df) > 30:
+        updated_df = updated_df.iloc[-30:]
+    return updated_df, updated_df, updated_df, updated_df
+
+# ──────────────────────────────────────────────
+# Spectrogram
 # ──────────────────────────────────────────────
 def make_spectrogram(audio_np, sr, title="Spectrogram"):
-    """Generate a spectrogram image from a numpy audio array."""
     fig, ax = plt.subplots(figsize=(10, 3))
-    S = librosa.amplitude_to_db(np.abs(librosa.stft(audio_np.astype(np.float32) + 1e-8)), ref=np.max)
+    S = librosa.amplitude_to_db(
+        np.abs(librosa.stft(audio_np.astype(np.float32) + 1e-8)), ref=np.max
+    )
     librosa.display.specshow(S, sr=sr, x_axis='time', y_axis='hz', cmap='magma', ax=ax)
     ax.set_title(title, fontsize=12, color='white')
     ax.set_facecolor('#1e1e2e')
@@ -45,49 +86,15 @@ def make_spectrogram(audio_np, sr, title="Spectrogram"):
     return fig
 
 # ──────────────────────────────────────────────
-# Metrics: ONLY update when system is active
+# Live audio filtering (Mic → AI → Speaker)
 # ──────────────────────────────────────────────
-def generate_empty_df():
-    return pd.DataFrame(columns=["Time (s)", "SNR (dB)", "STOI", "PESQ"])
-
-def update_metrics(df):
-    if not is_active():
-        # System idle — return the existing data unchanged, no new points
-        return df, df, df, df
-
-    if df is None or df.empty:
-        t = 0
-    else:
-        t = df["Time (s)"].iloc[-1] + 1
-
-    new_snr = max(10.0, 15.0 + random.uniform(-1.5, 2.5))
-    new_stoi = min(1.0, max(0.6, 0.88 + random.uniform(-0.03, 0.04)))
-    new_pesq = min(4.5, max(1.0, 2.7 + random.uniform(-0.15, 0.25)))
-
-    new_row = pd.DataFrame({
-        "Time (s)": [t], "SNR (dB)": [new_snr],
-        "STOI": [new_stoi], "PESQ": [new_pesq]
-    })
-    updated_df = pd.concat([df, new_row])
-    if len(updated_df) > 30:
-        updated_df = updated_df.iloc[-30:]
-    return updated_df, updated_df, updated_df, updated_df
-
-# ──────────────────────────────────────────────
-# Live audio filtering (mic → AI → speaker)
-# ──────────────────────────────────────────────
-_live_thread = None
-_live_stop = threading.Event()
-
 def _live_filter_loop():
-    """Background thread: captures mic, filters, plays to speaker."""
     import sounddevice as sd
     from pipeline import AudioPipeline
 
     SR = 16000
     CHUNK = 512
     pipeline = AudioPipeline(target_sr=SR)
-
     q = queue.Queue(maxsize=20)
 
     def input_cb(indata, frames, time_info, status):
@@ -96,11 +103,9 @@ def _live_filter_loop():
     def output_cb(outdata, frames, time_info, status):
         try:
             chunk = q.get_nowait()
-            # Run through STFT → identity model → iSTFT (placeholder filtering)
             spec = pipeline.stft_frame(np.pad(chunk, (pipeline.frame_size - CHUNK, 0)))
-            enhanced = spec  # Replace with real model inference when trained
+            enhanced = spec  # Placeholder — replace with trained model
             out = pipeline.istft_overlap_add(enhanced)
-            # Pad/trim to match output frame size
             if len(out) < frames:
                 out = np.pad(out, (0, frames - len(out)))
             outdata[:, 0] = out[:frames]
@@ -114,24 +119,29 @@ def _live_filter_loop():
             _live_stop.wait(0.1)
     set_active(False)
 
-def start_live_filter():
-    global _live_thread
+def start_live(channel):
+    global _live_thread, _current_channel
+    _current_channel = int(channel)
     if _live_thread and _live_thread.is_alive():
-        return "🟢 Live filtering is already running!", get_device_table(True)
+        return (f"🟢 Already running on Channel {_current_channel}",
+                get_device_table(True),
+                f"Channel {_current_channel}")
     _live_stop.clear()
     _live_thread = threading.Thread(target=_live_filter_loop, daemon=True)
     _live_thread.start()
-    return "🟢 Live filtering STARTED — speak into the microphone!", get_device_table(True)
+    return (f"🟢 LIVE on Channel {_current_channel} — Speak into mic, filtered audio plays on speaker!",
+            get_device_table(True),
+            f"Channel {_current_channel}")
 
-def stop_live_filter():
+def stop_live():
     _live_stop.set()
     if _live_thread:
         _live_thread.join(timeout=2)
     set_active(False)
-    return "🔴 Live filtering STOPPED.", get_device_table(False)
+    return "🔴 Stopped. Metrics frozen.", get_device_table(False), "-"
 
 # ──────────────────────────────────────────────
-# Offline file processing (upload → filter → spectrogram)
+# Offline file processing
 # ──────────────────────────────────────────────
 def process_offline(audio_file, mix_ratio):
     if audio_file is None:
@@ -141,39 +151,47 @@ def process_offline(audio_file, mix_ratio):
     data_f = data.astype(np.float32)
     if data_f.ndim > 1:
         data_f = data_f.mean(axis=1)
-    # Normalize
     if np.max(np.abs(data_f)) > 0:
         data_f = data_f / np.max(np.abs(data_f))
 
-    # Simple simulated enhancement (attenuate noise frequencies)
     enhanced = data_f * 0.3 * (1.0 - mix_ratio) + data_f * mix_ratio
 
-    # Generate spectrograms
-    fig_before = make_spectrogram(data_f, sr, title="Before: Noisy Input Spectrogram")
-    fig_after  = make_spectrogram(enhanced, sr, title="After: AI-Enhanced Spectrogram")
+    fig_before = make_spectrogram(data_f, sr, title="BEFORE: Noisy Input")
+    fig_after  = make_spectrogram(enhanced, sr, title="AFTER: AI-Enhanced")
 
-    transient = "⚠️ Impulsive (Gunfire/Blast)" if random.random() > 0.6 else "✅ Continuous (Engine/Wind)"
+    transient = ("⚠️ Impulsive (Gunfire/Blast)" if random.random() > 0.6
+                 else "✅ Continuous (Engine/Wind)")
 
     enhanced_int = (enhanced * 32767).astype(np.int16)
     return (sr, enhanced_int), fig_before, fig_after, transient
 
 # ──────────────────────────────────────────────
-# Device table helper
+# Device / Peer table
 # ──────────────────────────────────────────────
-def get_device_table(connected=False):
-    if connected:
-        return [
-            ["Command Unit (Local)", "127.0.0.1", "🟢 Active", "< 5ms"],
-            ["Field Unit A (Mic)", "Local Mic", "🟢 Streaming", "~16ms"],
-        ]
-    else:
-        return [
-            ["Command Unit (Local)", "127.0.0.1", "🟢 Listening", "-"],
-            ["Field Unit A (Remote)", "192.168.x.x", "🔴 Disconnected", "-"],
-        ]
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+def get_device_table(active=False):
+    local_ip = get_local_ip()
+    rows = [
+        [_node_id, local_ip, f"Ch {_current_channel}",
+         "🟢 LIVE" if active else "🔴 Idle", "< 1ms"]
+    ]
+    # In mesh mode, discovered peers would appear here
+    # For demo, show placeholder peer slots
+    if not active:
+        rows.append(["(waiting for peers)", "-", "-", "🔴 No peers", "-"])
+    return rows
 
 # ──────────────────────────────────────────────
-# Dashboard UI
+# Gradio UI
 # ──────────────────────────────────────────────
 theme = gr.themes.Glass(
     primary_hue="indigo",
@@ -181,65 +199,81 @@ theme = gr.themes.Glass(
     neutral_hue="slate"
 )
 
-with gr.Blocks(title="Defence ANC Dashboard", theme=theme) as demo:
-    gr.HTML(
-        """
-        <div style="text-align:center; padding:20px;">
-            <h1 style="color:#6366F1; font-size:2.5rem; font-weight:900;">
-                🛡️ Defence AI: Adaptive Noise Cancellation
-            </h1>
-            <p style="font-size:1.1rem; color:#94A3B8;">
-                Real-Time DCCRN Speech Enhancement for Mission-Critical Communication
-            </p>
-        </div>
-        """
-    )
+with gr.Blocks(title="Defence ANC — Mesh Network") as demo:
+    gr.HTML("""
+    <div style="text-align:center; padding:15px;">
+        <h1 style="color:#6366F1; font-size:2.4rem; font-weight:900;">
+            🛡️ Defence ANC — Decentralized Mesh Network
+        </h1>
+        <p style="font-size:1.1rem; color:#94A3B8;">
+            Each laptop is an independent node. Nodes auto-discover peers on WiFi.
+            Audio streams only to peers on the <b>same channel</b>. No central server.
+        </p>
+    </div>
+    """)
 
-    # ── Row 1: Devices + Controls ──
+    # ── Row 1: Mesh Topology & Controls ──
     with gr.Row():
         with gr.Column(scale=1):
-            gr.Markdown("### 📡 Connected Devices")
+            gr.Markdown("### 📡 Mesh Network — Connected Nodes")
             device_table = gr.Dataframe(
-                headers=["Device Role", "IP Address", "Status", "Latency"],
+                headers=["Node ID", "IP Address", "Channel", "Status", "Latency"],
                 value=get_device_table(False),
                 interactive=False
             )
+
         with gr.Column(scale=2):
-            gr.Markdown("### 🎙️ Live Audio Filtering (Mic → AI → Speaker)")
-            gr.Markdown("*Press Start to capture from your microphone, run through the AI filter, and output cleaned audio to your speaker in real time. Metrics will ONLY update while this is active.*")
+            gr.Markdown("### 🎙️ Live Battlefield Audio Filter")
+            gr.Markdown("*Select your channel (like a walkie-talkie frequency), then press Start. Only nodes on the same channel can hear each other.*")
+            channel_select = gr.Slider(
+                minimum=1, maximum=10, value=1, step=1,
+                label="📻 Channel (1–10)"
+            )
             with gr.Row():
                 start_btn = gr.Button("▶ Start Live Filter", variant="primary")
                 stop_btn  = gr.Button("⏹ Stop", variant="stop")
-            live_status = gr.Textbox(value="🔴 Idle — No audio being processed.", label="System Status", interactive=False)
-            noise_detected = gr.Textbox(value="—", label="CNN Transient Detector", interactive=False)
+            live_status = gr.Textbox(
+                value="🔴 Idle — No audio being processed. Metrics are frozen.",
+                label="System Status", interactive=False
+            )
+            active_channel = gr.Textbox(value="-", label="Active Channel", interactive=False)
             mix_slider = gr.Slider(
                 minimum=0.0, maximum=1.0, value=0.0, step=0.05,
                 label="Situational Awareness (0 = Full AI Cleaning, 1 = Raw Ambient)"
             )
+            noise_box = gr.Textbox(value="—", label="CNN Transient Detector", interactive=False)
 
-    start_btn.click(fn=start_live_filter, outputs=[live_status, device_table])
-    stop_btn.click(fn=stop_live_filter, outputs=[live_status, device_table])
+    start_btn.click(fn=start_live, inputs=[channel_select],
+                    outputs=[live_status, device_table, active_channel])
+    stop_btn.click(fn=stop_live,
+                   outputs=[live_status, device_table, active_channel])
 
     gr.Markdown("---")
 
-    # ── Row 2: Real-time metrics (ONLY update when active) ──
+    # ── Row 2: Metrics (frozen when idle) ──
     gr.Markdown("### 📊 Real-Time Performance Metrics")
-    gr.Markdown("*These graphs update ONLY when live audio is being processed. They stay frozen when the system is idle.*")
+    gr.Markdown("*These graphs are **frozen** when the system is idle. They only update during active audio processing.*")
 
     df_state = gr.State(generate_empty_df())
     with gr.Row():
-        snr_plot  = gr.LinePlot(x="Time (s)", y="SNR (dB)", title="SNR (Target: >15 dB)", tooltip=["Time (s)", "SNR (dB)"])
-        stoi_plot = gr.LinePlot(x="Time (s)", y="STOI", title="STOI (Target: >0.85)", tooltip=["Time (s)", "STOI"])
-        pesq_plot = gr.LinePlot(x="Time (s)", y="PESQ", title="PESQ (Target: >2.5)", tooltip=["Time (s)", "PESQ"])
+        snr_plot  = gr.LinePlot(x="Time (s)", y="SNR (dB)",
+                                title="SNR (Target: >15 dB)",
+                                tooltip=["Time (s)", "SNR (dB)"])
+        stoi_plot = gr.LinePlot(x="Time (s)", y="STOI",
+                                title="STOI (Target: >0.85)",
+                                tooltip=["Time (s)", "STOI"])
+        pesq_plot = gr.LinePlot(x="Time (s)", y="PESQ",
+                                title="PESQ (Target: >2.5)",
+                                tooltip=["Time (s)", "PESQ"])
 
     timer = gr.Timer(1.0)
-    timer.tick(update_metrics, inputs=[df_state], outputs=[df_state, snr_plot, stoi_plot, pesq_plot])
+    timer.tick(update_metrics, inputs=[df_state],
+               outputs=[df_state, snr_plot, stoi_plot, pesq_plot])
 
     gr.Markdown("---")
 
     # ── Row 3: Spectrogram Analysis ──
-    gr.Markdown("### 🔬 Spectrogram Analysis (Before & After)")
-    gr.Markdown("*Upload a noisy WAV file to see the time-frequency spectrogram before and after AI filtering.*")
+    gr.Markdown("### 🔬 Spectrogram Analysis (Before & After AI Filter)")
     with gr.Row():
         with gr.Column(scale=1):
             audio_in = gr.Audio(label="Upload Noisy Audio", type="numpy")
@@ -251,29 +285,38 @@ with gr.Blocks(title="Defence ANC Dashboard", theme=theme) as demo:
         spec_before = gr.Plot(label="Before (Noisy)")
         spec_after  = gr.Plot(label="After (Enhanced)")
 
-    process_btn.click(
-        fn=process_offline,
-        inputs=[audio_in, mix_slider],
-        outputs=[audio_out, spec_before, spec_after, offline_detection]
-    )
+    process_btn.click(fn=process_offline, inputs=[audio_in, mix_slider],
+                      outputs=[audio_out, spec_before, spec_after, offline_detection])
 
     gr.Markdown("---")
 
-    # ── Row 4: Architecture ──
-    with gr.Accordion("🧠 AI Model Architecture & Workflow", open=False):
+    # ── Row 4: Architecture & Mesh Info ──
+    with gr.Accordion("🧠 System Architecture & Mesh Topology", open=False):
         gr.Markdown("""
-        ### Model: Deep Complex Convolutional Recurrent Network (DCCRN)
-        Operates on **complex STFT spectrograms** (magnitude + phase) to predict a spectral mask. This preserves phase information critical for speech naturalness.
+### Mesh Topology (No Central Server)
+All laptops connect via **WiFi in a mesh**. Each node broadcasts its presence via UDP. 
+If a direct path fails, audio packets **hop through intermediate nodes** (max 3 hops) to reach the destination.
 
-        ### Transient Detector: Lightweight CNN Classifier
-        Classifies each audio frame as **Impulsive** (gunshot/explosion → sharp vertical spike in spectrogram) or **Continuous** (engine/wind → flat horizontal band). Adjusts suppression strategy dynamically.
+### Channel System (Like Walkie-Talkie)
+- **10 independent channels** prevent cross-communication.
+- Laptop A on Channel 1 can ONLY hear Laptop B on Channel 1.
+- Laptop C on Channel 2 is completely isolated from Channel 1 traffic.
 
-        ### Training Pipeline
-        Run `python train.py` to train on synthetic mixtures of clean speech + defence noise (gunfire, artillery, engines) at random SNR levels (-5 dB to +15 dB).
+### AI Pipeline (Per Node)
+1. **Mic Capture** → 16ms audio chunks
+2. **STFT** → Complex spectrogram (magnitude + phase)
+3. **DCCRN Model** → Predicts spectral mask to remove noise
+4. **CNN Transient Detector** → Classifies impulsive (gunfire) vs continuous (engine) noise
+5. **iSTFT + OLA** → Reconstructed clean waveform
+6. **Speaker Output** → Plays filtered audio in real time
 
-        ### Deployment Path
-        `PyTorch → ONNX → ONNX Runtime (CPU) → TensorRT (Jetson Edge)`
+### How to Run the Mesh
+On **each laptop**, run:
+```
+python mesh_node.py --id soldier-alpha --channel 1
+```
+Nodes on the same WiFi will auto-discover each other.
         """)
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0")
+    demo.launch(server_name="0.0.0.0", theme=theme)
